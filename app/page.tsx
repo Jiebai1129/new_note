@@ -4,23 +4,24 @@ import type React from "react"
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { PlusCircle, ChevronDown, ChevronRight, File, Hash, Search, Folder, FolderPlus, X, Edit } from "lucide-react"
+import { PlusCircle, ChevronDown, ChevronRight, File, Hash, Search, Folder, FolderPlus, X, Edit, AlertCircle, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { toast } from "@/components/ui/use-toast"
 import { Toaster } from "@/components/ui/toaster"
+import { useNotes, ApiNote, ApiFolder, getFileUrl } from "@/hooks/useNotes"
 
 // 定义笔记类型
-type Note = {
-  id: string
-  title: string
-  content: string
-  tags: string[]
-  notebookId: string
-  timestamp: string
-  preview?: string
-  lastUpdated: number
-}
+// type Note = {
+//   id: string
+//   title: string
+//   content: string
+//   tags: string[]
+//   notebookId: string
+//   timestamp: string
+//   preview?: string
+//   lastUpdated: number
+// }
 
 // 定义标签类型
 type Tag = {
@@ -29,10 +30,10 @@ type Tag = {
 }
 
 // 定义笔记本类型
-type Notebook = {
-  id: string
-  name: string
-}
+// type Notebook = {
+//   id: string
+//   name: string
+// }
 
 // 生成笔记预览
 const generatePreview = (content: string, length = 60): string => {
@@ -109,15 +110,11 @@ const CustomButton = ({
 
 export default function HomePage() {
   const router = useRouter()
+  const { notes, folders, loading, error, getAllTags, saveNote, createFolder, fetchNotes } = useNotes();
 
   // 所有可用标签
-  const [availableTags, setAvailableTags] = useState<Tag[]>([])
-
-  // 笔记本数据
-  const [notebooks, setNotebooks] = useState<Notebook[]>([])
-
-  // 笔记数据
-  const [notes, setNotes] = useState<Note[]>([])
+  const [availableTags, setAvailableTags] = useState<string[]>([])
+  const [retrying, setRetrying] = useState(false)
 
   const [expandedSections, setExpandedSections] = useState({
     notebooks: true,
@@ -127,416 +124,439 @@ export default function HomePage() {
   // 搜索状态
   const [searchQuery, setSearchQuery] = useState("")
   const [activeFilter, setActiveFilter] = useState<string | null>(null)
+  const [filterType, setFilterType] = useState<"tag" | "folder" | null>(null)
 
-  // 从localStorage加载数据
+  // 更新标签列表
   useEffect(() => {
-    const loadData = () => {
-      console.log('首页开始加载数据...')
-      const savedNotes = localStorage.getItem("notes")
-      const savedTags = localStorage.getItem("tags")
-      const savedNotebooks = localStorage.getItem("notebooks")
-
-      if (savedNotes) {
-        const parsedNotes = JSON.parse(savedNotes)
-        console.log('从 localStorage 加载的笔记数据:', parsedNotes)
-        // 只在数据确实发生变化时更新状态
-        if (JSON.stringify(notes) !== JSON.stringify(parsedNotes)) {
-          setNotes(parsedNotes)
-        }
-      } else {
-        // 如果没有保存的笔记，创建一个默认笔记本和空笔记列表
-        const defaultNotebook = { id: "default", name: "默认笔记本" }
-        setNotebooks([defaultNotebook])
-        localStorage.setItem("notebooks", JSON.stringify([defaultNotebook]))
-        setNotes([])
-        localStorage.setItem("notes", JSON.stringify([]))
-      }
-
-      if (savedTags) {
-        const parsedTags = JSON.parse(savedTags)
-        console.log('从 localStorage 加载的标签数据:', parsedTags)
-        // 只在数据确实发生变化时更新状态
-        if (JSON.stringify(availableTags) !== JSON.stringify(parsedTags)) {
-          setAvailableTags(parsedTags)
-        }
-      } else {
-        setAvailableTags([])
-        localStorage.setItem("tags", JSON.stringify([]))
-      }
-
-      if (savedNotebooks) {
-        const parsedNotebooks = JSON.parse(savedNotebooks)
-        console.log('从 localStorage 加载的笔记本数据:', parsedNotebooks)
-        // 只在数据确实发生变化时更新状态
-        if (JSON.stringify(notebooks) !== JSON.stringify(parsedNotebooks)) {
-          setNotebooks(parsedNotebooks)
-        }
-      } else {
-        const defaultNotebook = { id: "default", name: "默认笔记本" }
-        setNotebooks([defaultNotebook])
-        localStorage.setItem("notebooks", JSON.stringify([defaultNotebook]))
-      }
+    if (notes.length > 0) {
+      setAvailableTags(getAllTags());
     }
+  }, [notes, getAllTags]);
 
-    // 初始加载
-    loadData()
-
-    // 监听路由变化
-    const handleRouteChange = () => {
-      console.log('路由变化，重新加载数据...')
-      loadData()
-    }
-
-    // 添加路由变化监听
-    window.addEventListener('popstate', handleRouteChange)
-
-    // 清理函数
-    return () => {
-      window.removeEventListener('popstate', handleRouteChange)
-    }
-  }, []) // 移除依赖项，使用事件监听
-
-  // 保存数据到localStorage
-  useEffect(() => {
-    localStorage.setItem("notes", JSON.stringify(notes))
-  }, [notes])
-
-  useEffect(() => {
-    localStorage.setItem("tags", JSON.stringify(availableTags))
-  }, [availableTags])
-
-  useEffect(() => {
-    localStorage.setItem("notebooks", JSON.stringify(notebooks))
-  }, [notebooks])
-
-  // 统计每个标签的使用次数
+  // 获取标签计数
   const getTagCounts = () => {
     const counts: Record<string, number> = {}
     notes.forEach((note) => {
       note.tags.forEach((tag) => {
-        counts[tag] = (counts[tag] || 0) + 1
+        if (!counts[tag]) {
+          counts[tag] = 0
+        }
+        counts[tag]++
       })
     })
     return counts
   }
 
-  // 统计每个笔记本的笔记数量
-  const getNotebookCounts = () => {
+  // 获取文件夹计数
+  const getFolderCounts = () => {
     const counts: Record<string, number> = {}
+    
     notes.forEach((note) => {
-      counts[note.notebookId] = (counts[note.notebookId] || 0) + 1
+      const folderPath = note.relative_path.split('/')[0];
+      if (folderPath && folderPath !== note.relative_path) {
+        if (!counts[folderPath]) {
+          counts[folderPath] = 0
+        }
+        counts[folderPath]++
+      } else {
+        if (!counts['根目录']) {
+          counts['根目录'] = 0
+        }
+        counts['根目录']++
+      }
     })
+    
     return counts
   }
 
-  const tagCounts = getTagCounts()
-  const notebookCounts = getNotebookCounts()
-
-  // 过滤笔记
-  const filteredNotes = notes
-    .filter((note) => {
-      // 如果有搜索查询
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase()
-        return (
-          note.title.toLowerCase().includes(query) ||
-          note.content.toLowerCase().includes(query) ||
-          note.tags.some((tag) => tag.toLowerCase().includes(query))
-        )
+  // 创建新文件夹
+  const handleCreateFolder = async () => {
+    const folderName = prompt("请输入新文件夹名称:")
+    if (folderName) {
+      try {
+        await createFolder(folderName);
+        toast({
+          title: "文件夹创建成功",
+          description: `已创建文件夹 "${folderName}"`,
+        })
+      } catch (error) {
+        toast({
+          title: "创建文件夹失败",
+          description: error instanceof Error ? error.message : "未知错误",
+          variant: "destructive",
+        })
       }
+    }
+  }
 
-      // 如果有标签过滤
-      if (activeFilter && activeFilter.startsWith("tag:")) {
-        const tagName = activeFilter.substring(4)
-        return note.tags.includes(tagName)
-      }
-
-      // 如果有笔记本过滤
-      if (activeFilter && activeFilter.startsWith("notebook:")) {
-        const notebookId = activeFilter.substring(9)
-        return note.notebookId === notebookId
-      }
-
-      // 否则显示所有笔记
-      return true
-    })
-    .sort((a, b) => b.lastUpdated - a.lastUpdated) // 按最后更新时间排序
-
+  // 切换侧边栏部分展开/折叠
   const toggleSection = (section: "notebooks" | "tags") => {
-    setExpandedSections({
-      ...expandedSections,
-      [section]: !expandedSections[section],
-    })
+    setExpandedSections((prev) => ({
+      ...prev,
+      [section]: !prev[section],
+    }))
   }
 
   // 创建新笔记
-  const createNewNote = () => {
-    // 确定默认笔记本
-    let defaultNotebookId = "default"
-    if (activeFilter && activeFilter.startsWith("notebook:")) {
-      defaultNotebookId = activeFilter.substring(9)
+  const createNewNote = async () => {
+    // 使用当前选中的文件夹 (如果有)
+    let selectedFolder: string | undefined = undefined;
+    if (filterType === "folder" && activeFilter) {
+      selectedFolder = activeFilter === "根目录" ? undefined : activeFilter;
     }
-
-    const newNote: Note = {
-      id: `note-${Date.now()}`,
-      title: "新笔记",
-      content: "",
-      tags: [],
-      notebookId: defaultNotebookId,
-      timestamp: updateTimestamp(),
-      preview: "",
-      lastUpdated: Date.now(),
+    
+    const defaultContent = "# 新笔记\n\n请在此处输入笔记内容..."
+    
+    try {
+      const result = await saveNote("新笔记", defaultContent, selectedFolder);
+      if (result && result.path) {
+        // 提取相对路径用于导航
+        const pathParts = result.path.split('/');
+        const fileName = pathParts[pathParts.length - 1];
+        
+        toast({
+          title: "笔记创建成功",
+          description: `已创建新笔记`,
+        })
+        
+        // 打开编辑页面
+        router.push(`/edit?path=${encodeURIComponent(result.path)}`)
+      }
+    } catch (error) {
+      toast({
+        title: "创建笔记失败",
+        description: error instanceof Error ? error.message : "未知错误",
+        variant: "destructive",
+      })
     }
-
-    const updatedNotes = [newNote, ...notes]
-    setNotes(updatedNotes)
-
-    // 保存到localStorage
-    localStorage.setItem("notes", JSON.stringify(updatedNotes))
-
-    // 导航到编辑页面
-    router.push(`/edit/${newNote.id}`)
-
-    // 显示成功提示
-    toast({
-      title: "已创建新笔记",
-      description: "您可以开始编辑新笔记了。",
-      duration: 3000,
-    })
   }
 
-  // 设置过滤器
-  const setFilter = (type: "tag" | "notebook", id: string) => {
-    if (type === "tag") {
-      const tagName = availableTags.find((tag) => tag.id === id)?.name
-      if (tagName) {
-        setActiveFilter(`tag:${tagName}`)
-        setSearchQuery("")
-      }
+  // 设置过滤器 (按标签或文件夹)
+  const setFilter = (type: "tag" | "folder", id: string) => {
+    if (activeFilter === id && filterType === type) {
+      // 如果点击当前激活的过滤器，则清除过滤器
+      setActiveFilter(null)
+      setFilterType(null)
     } else {
-      setActiveFilter(`notebook:${id}`)
-      setSearchQuery("")
+      // 否则设置新的过滤器
+      setActiveFilter(id)
+      setFilterType(type)
     }
   }
 
   // 清除过滤器
   const clearFilter = () => {
     setActiveFilter(null)
+    setFilterType(null)
     setSearchQuery("")
   }
 
-  // 打开笔记编辑页面
-  const openNote = (noteId: string) => {
-    router.push(`/edit/${noteId}`)
+  // 打开笔记
+  const openNote = (note: ApiNote) => {
+    router.push(`/edit?path=${encodeURIComponent(note.path)}`)
+  }
+
+  // 过滤笔记
+  const filteredNotes = notes.filter((note) => {
+    // 先检查是否匹配搜索查询
+    const matchesSearch = searchQuery === "" || 
+                          note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          note.content.toLowerCase().includes(searchQuery.toLowerCase());
+    
+    if (!matchesSearch) return false;
+    
+    // 然后检查是否匹配标签过滤器
+    if (filterType === "tag" && activeFilter) {
+      return note.tags.includes(activeFilter);
+    }
+    
+    // 检查是否匹配文件夹过滤器
+    if (filterType === "folder" && activeFilter) {
+      if (activeFilter === "根目录") {
+        // 根目录的笔记不包含路径分隔符或是第一级文件
+        return !note.relative_path.includes('/') || 
+               note.relative_path.split('/').length === 1;
+      } else {
+        // 其他文件夹下的笔记路径以文件夹名开头
+        return note.relative_path.startsWith(activeFilter + '/');
+      }
+    }
+    
+    return true;
+  });
+
+  // 重试加载数据
+  const handleRetry = async () => {
+    setRetrying(true)
+    try {
+      await fetchNotes()
+    } finally {
+      setRetrying(false)
+    }
   }
 
   return (
-    <div className="flex h-screen bg-white text-gray-900">
-      {/* Left Sidebar */}
-      <div className="w-64 border-r flex flex-col">
-        <div className="p-4 border-b">
-          <h1 className="text-lg font-medium mb-4">笔记本</h1>
-          <CustomButton onClick={createNewNote} className="w-full py-2 px-4 text-sm font-medium">
-            <PlusCircle className="h-4 w-4 mr-2" />
-            <span>新建笔记</span>
-          </CustomButton>
-        </div>
-
-        <div className="px-3 py-2">
-          <div className="relative">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-500" />
-            <input
-              type="text"
-              placeholder="搜索笔记..."
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value)
-                setActiveFilter(null)
-              }}
-              className="w-full pl-9 pr-3 py-2 rounded-full border border-gray-300 text-sm focus:outline-none focus:ring-1 focus:ring-black focus:border-black"
-            />
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-auto">
-          <div className="p-3">
-            <div className="mb-2">
-              <button
-                className={cn(
-                  "flex items-center w-full px-3 py-2 rounded-full transition-colors text-sm",
-                  activeFilter === null ? "bg-gray-100" : "hover:bg-gray-100",
-                )}
-                onClick={clearFilter}
-              >
-                <File className="h-4 w-4 mr-2" />
-                <span>所有笔记</span>
-                <span className="ml-auto text-xs text-gray-500">{notes.length}</span>
-              </button>
-            </div>
-
-            <div className="mb-2">
-              <div className="flex items-center justify-between px-2 py-1">
-                <button
-                  className="flex items-center text-gray-700 hover:text-gray-900"
-                  onClick={() => toggleSection("notebooks")}
+    <div className="mx-auto flex h-screen bg-white dark:bg-gray-950">
+      {/* 侧边栏 */}
+      <aside className="w-64 border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 p-4 overflow-y-auto">
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-xl font-bold">我的笔记</h1>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <CustomButton
+                  variant="outline"
+                  className="px-2 py-1 h-8 w-8"
+                  onClick={createNewNote}
+                  disabled={loading || !!error}
                 >
-                  {expandedSections.notebooks ? (
-                    <ChevronDown className="h-4 w-4 mr-2" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 mr-2" />
-                  )}
-                  <Folder className="h-4 w-4 mr-2" />
-                  <span>笔记本</span>
-                </button>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button onClick={() => {}} className="p-1 rounded-full hover:bg-gray-100">
-                        <FolderPlus className="h-4 w-4" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>新建笔记本</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-
-              {expandedSections.notebooks && (
-                <div className="ml-6 mt-1 space-y-1">
-                  {notebooks.map((notebook) => (
-                    <div key={notebook.id} className="flex items-center justify-between group">
-                      <button
-                        className={cn(
-                          "flex items-center text-gray-600 hover:text-gray-900 py-1.5 px-3 rounded-full flex-grow transition-colors text-sm",
-                          activeFilter === `notebook:${notebook.id}` && "bg-gray-100",
-                        )}
-                        onClick={() => setFilter("notebook", notebook.id)}
-                      >
-                        <span>{notebook.name}</span>
-                        <span className="ml-2 text-xs text-gray-500">({notebookCounts[notebook.id] || 0})</span>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="mb-2">
-              <button
-                className="flex items-center text-gray-700 hover:text-gray-900 px-2 py-1"
-                onClick={() => toggleSection("tags")}
-              >
-                {expandedSections.tags ? (
-                  <ChevronDown className="h-4 w-4 mr-2" />
-                ) : (
-                  <ChevronRight className="h-4 w-4 mr-2" />
-                )}
-                <Hash className="h-4 w-4 mr-2" />
-                <span>标签</span>
-              </button>
-
-              {expandedSections.tags && (
-                <div className="ml-6 mt-1 space-y-1">
-                  {availableTags.map((tag) => (
-                    <div key={tag.id} className="flex items-center justify-between group">
-                      <button
-                        className={cn(
-                          "flex items-center text-gray-600 hover:text-gray-900 py-1.5 px-3 rounded-full flex-grow transition-colors text-sm",
-                          activeFilter === `tag:${tag.name}` && "bg-gray-100",
-                        )}
-                        onClick={() => setFilter("tag", tag.id)}
-                      >
-                        <span>{tag.name}</span>
-                        <span className="ml-2 text-xs text-gray-500">({tagCounts[tag.name] || 0})</span>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+                  <PlusCircle size={16} />
+                </CustomButton>
+              </TooltipTrigger>
+              <TooltipContent>创建新笔记</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
-      </div>
 
-      {/* Main Content - Notes Grid */}
-      <div className="flex-1 flex flex-col">
-        <div className="p-4 border-b flex items-center justify-between">
-          <h2 className="text-lg font-medium">
-            {activeFilter
-              ? activeFilter.startsWith("tag:")
-                ? `标签: ${activeFilter.substring(4)}`
-                : `笔记本: ${notebooks.find((nb) => nb.id === activeFilter.substring(9))?.name || ""}`
-              : searchQuery
-                ? `搜索: ${searchQuery}`
-                : "所有笔记"}
-          </h2>
-          {(activeFilter || searchQuery) && (
-            <button onClick={clearFilter} className="p-1 rounded-full hover:bg-gray-100">
-              <X className="h-4 w-4" />
+        <div className="relative mb-4">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
+          <input
+            type="text"
+            placeholder="搜索笔记..."
+            className="w-full pl-8 h-9 bg-gray-100 dark:bg-gray-800 border-0 rounded-md focus:ring-1 focus:ring-gray-300"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            disabled={loading || !!error}
+          />
+          {searchQuery && (
+            <button
+              className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500 hover:text-gray-700"
+              onClick={() => setSearchQuery("")}
+              disabled={loading || !!error}
+            >
+              <X size={16} />
             </button>
           )}
         </div>
 
-        <div className="flex-1 overflow-auto p-6">
-          {filteredNotes.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredNotes.map((note) => (
-                <div
-                  key={note.id}
-                  className="border rounded-xl p-4 hover:shadow-md transition-shadow cursor-pointer relative group"
-                  onClick={() => openNote(note.id)}
-                >
-                  <h3 className="font-medium text-lg mb-2 pr-8">{note.title}</h3>
-                  {note.content && (
-                    <p className="text-sm text-gray-600 line-clamp-3 mb-3">
-                      {note.preview || generatePreview(note.content)}
-                    </p>
-                  )}
-                  {note.tags.length > 0 && (
-                    <div className="flex flex-wrap items-center gap-1 mb-3">
-                      {note.tags.slice(0, 3).map((tag, index) => (
-                        <span key={index} className="bg-gray-100 text-gray-800 px-2 py-0.5 rounded-full text-xs">
-                          {tag}
-                        </span>
-                      ))}
-                      {note.tags.length > 3 && (
-                        <span className="bg-gray-100 text-gray-800 px-2 py-0.5 rounded-full text-xs">
-                          +{note.tags.length - 3}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between text-xs text-gray-500">
-                    <span>{notebooks.find((nb) => nb.id === note.notebookId)?.name}</span>
-                    <span>{formatDate(note.lastUpdated)}</span>
-                  </div>
+        {/* 笔记本列表 */}
+        <div className="mb-4">
+          <div
+            className="flex items-center justify-between mb-2 cursor-pointer"
+            onClick={() => toggleSection("notebooks")}
+          >
+            <div className="flex items-center gap-1 text-sm font-medium">
+              {expandedSections.notebooks ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              <span>文件夹</span>
+            </div>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
                   <button
-                    className="absolute top-3 right-3 p-1 rounded-full bg-gray-100 opacity-0 group-hover:opacity-100 transition-opacity"
+                    className="text-gray-500 hover:text-gray-700 p-1 rounded-full hover:bg-gray-100"
                     onClick={(e) => {
                       e.stopPropagation()
-                      openNote(note.id)
+                      handleCreateFolder()
                     }}
+                    disabled={loading || !!error}
                   >
-                    <Edit className="h-4 w-4" />
+                    <FolderPlus size={14} />
                   </button>
+                </TooltipTrigger>
+                <TooltipContent>创建新文件夹</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+          {expandedSections.notebooks && (
+            <div className="space-y-1 ml-6">
+              <div
+                className={cn(
+                  "flex items-center gap-2 text-sm rounded-md px-3 py-1.5 cursor-pointer text-gray-900",
+                  activeFilter === "根目录" && filterType === "folder" 
+                    ? "bg-gray-200 dark:bg-gray-800" 
+                    : "hover:bg-gray-100 dark:hover:bg-gray-800"
+                )}
+                onClick={() => setFilter("folder", "根目录")}
+              >
+                <Folder size={14} />
+                <span>根目录</span>
+                <span className="ml-auto text-xs text-gray-500">{getFolderCounts()["根目录"] || 0}</span>
+              </div>
+              {folders.map((folder) => (
+                <div
+                  key={folder.path}
+                  className={cn(
+                    "flex items-center gap-2 text-sm rounded-md px-3 py-1.5 cursor-pointer",
+                    activeFilter === folder.name && filterType === "folder"
+                      ? "bg-gray-200 dark:bg-gray-800"
+                      : "hover:bg-gray-100 dark:hover:bg-gray-800"
+                  )}
+                  onClick={() => setFilter("folder", folder.name)}
+                >
+                  <Folder size={14} />
+                  <span>{folder.name}</span>
+                  <span className="ml-auto text-xs text-gray-500">{getFolderCounts()[folder.name] || 0}</span>
                 </div>
               ))}
             </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full p-4 text-center text-gray-500">
-              <File className="h-16 w-16 mb-4 opacity-30" />
-              <p className="text-lg mb-2">没有找到匹配的笔记</p>
-              <p className="mb-4">尝试使用不同的搜索词或过滤条件</p>
-              <CustomButton onClick={clearFilter} className="px-4 py-2 text-sm">
-                清除过滤器
-              </CustomButton>
+          )}
+        </div>
+
+        {/* 标签列表 */}
+        <div className="mb-4">
+          <div
+            className="flex items-center justify-between mb-2 cursor-pointer"
+            onClick={() => toggleSection("tags")}
+          >
+            <div className="flex items-center gap-1 text-sm font-medium">
+              {expandedSections.tags ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              <span>标签</span>
+            </div>
+          </div>
+          {expandedSections.tags && (
+            <div className="space-y-1 ml-6">
+              {availableTags.map((tag) => (
+                <div
+                  key={tag}
+                  className={cn(
+                    "flex items-center gap-2 text-sm rounded-md px-3 py-1.5 cursor-pointer",
+                    activeFilter === tag && filterType === "tag"
+                      ? "bg-gray-200 dark:bg-gray-800"
+                      : "hover:bg-gray-100 dark:hover:bg-gray-800"
+                  )}
+                  onClick={() => setFilter("tag", tag)}
+                >
+                  <Hash size={14} />
+                  <span>{tag}</span>
+                  <span className="ml-auto text-xs text-gray-500">{getTagCounts()[tag] || 0}</span>
+                </div>
+              ))}
             </div>
           )}
         </div>
-      </div>
+      </aside>
 
-      {/* 提示消息 */}
+      {/* 主内容区 */}
+      <main className="flex-1 p-6 overflow-y-auto">
+        {loading ? (
+          <div className="flex flex-col justify-center items-center h-full">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900 mb-4"></div>
+            <div className="text-gray-500">正在加载笔记...</div>
+          </div>
+        ) : error ? (
+          <div className="flex flex-col justify-center items-center h-full text-red-500 space-y-4">
+            <AlertCircle className="h-16 w-16" />
+            <div className="text-xl font-semibold">加载笔记时出错</div>
+            <div className="text-center max-w-md">{error}</div>
+            <button
+              onClick={handleRetry}
+              disabled={retrying}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white rounded-full mt-4 hover:bg-gray-700"
+            >
+              {retrying ? (
+                <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              <span>重试</span>
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* 标题栏 */}
+            <div className="flex justify-between items-center mb-6">
+              <div className="flex items-center gap-2">
+                <h2 className="text-2xl font-bold">
+                  {activeFilter
+                    ? filterType === "tag"
+                      ? `标签: #${activeFilter}`
+                      : `文件夹: ${activeFilter}`
+                    : searchQuery
+                    ? `搜索: "${searchQuery}"`
+                    : "所有笔记"}
+                </h2>
+                {(activeFilter || searchQuery) && (
+                  <button
+                    className="text-gray-500 hover:text-gray-700 p-1 rounded-full hover:bg-gray-100"
+                    onClick={clearFilter}
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+              <CustomButton
+                variant="default"
+                className="px-3 py-1.5 h-9 text-sm flex items-center gap-1"
+                onClick={createNewNote}
+              >
+                <PlusCircle size={16} />
+                <span>新笔记</span>
+              </CustomButton>
+            </div>
+
+            {/* 笔记列表 */}
+            {filteredNotes.length === 0 ? (
+              <div className="text-center py-16">
+                <p className="text-gray-500 mb-4">
+                  {searchQuery || activeFilter ? "没有找到匹配的笔记" : "没有笔记"}
+                </p>
+                <CustomButton
+                  variant="outline"
+                  className="px-4 py-2 text-sm"
+                  onClick={createNewNote}
+                >
+                  创建第一个笔记
+                </CustomButton>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filteredNotes.map((note) => (
+                  <div
+                    key={note.path}
+                    className="group border border-gray-200 dark:border-gray-800 rounded-lg p-4 hover:border-gray-300 dark:hover:border-gray-700 cursor-pointer transition-all"
+                    onClick={() => openNote(note)}
+                  >
+                    <div className="flex justify-between items-start mb-2">
+                      <h3 className="font-medium line-clamp-1">{note.title}</h3>
+                      <button className="p-0.5 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Edit size={14} />
+                      </button>
+                    </div>
+                    <p className="text-gray-600 dark:text-gray-400 text-sm mb-3 line-clamp-2">
+                      {note.preview}
+                    </p>
+                    <div className="flex justify-between items-center">
+                      <div className="flex flex-wrap gap-1">
+                        {note.tags.slice(0, 2).map((tag) => (
+                          <span
+                            key={tag}
+                            className="text-xs px-1.5 py-0.5 bg-gray-100 dark:bg-gray-800 rounded text-gray-600 dark:text-gray-400"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setFilter("tag", tag)
+                            }}
+                          >
+                            #{tag}
+                          </span>
+                        ))}
+                        {note.tags.length > 2 && (
+                          <span className="text-xs px-1.5 py-0.5 bg-gray-100 dark:bg-gray-800 rounded text-gray-600 dark:text-gray-400">
+                            +{note.tags.length - 2}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-xs text-gray-500">
+                        {formatDate(note.last_modified * 1000)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </main>
+      
       <Toaster />
     </div>
   )
